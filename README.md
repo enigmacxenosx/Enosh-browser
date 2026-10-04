@@ -14,6 +14,15 @@ Enosx AI includes explicit context permissions and selectable processing modes: 
 2. Under **Local GGUF models**, choose **Import** and select a Hugging Face `.gguf` file.
 3. Select the imported model, keep **Processing mode** on **Local AI**, and submit a prompt.
 
+The **Generation controls** card lets you tune the next local run without leaving the sidebar:
+
+- **Temperature** — lower values are more focused; higher values are more creative.
+- **Context window** — choose how much conversation/page context the runtime can consider.
+- **Max output** — cap the number of generated tokens.
+- **Top P** — adjust nucleus sampling for another creativity/focus tradeoff.
+
+These preferences are saved in local storage and are included in the prompt handoff contract for the future native inference runtime.
+
 The browser shell validates and stores the model locally so it remains available offline. This UI is deliberately runtime-agnostic: the next native release can attach a bundled `llama.cpp`/`llama-server` runtime without changing the sidebar or model library. Until that runtime is bundled, the panel clearly reports that the selected model is ready and keeps the prompt local instead of pretending a remote completion occurred.
 
 The browser is offline-first. The app registers a service worker, caches the application shell, displays online/offline status, and stores bookmarks, reading-list items, history, and preferences in local browser storage. The installed desktop app loads the compiled static build without requiring an internet connection.
