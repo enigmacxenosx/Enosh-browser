@@ -6,7 +6,15 @@ A private, focused, offline-ready browser shell with Enosx AI.
 
 Enosx Browser now includes a Chrome/Brave-style browser shell with tabs, address/search navigation, back and forward controls, reload, bookmarks, reading list, history, workspaces, private mode, privacy status, install prompts, and an Enosx AI panel.
 
-Enosx AI includes explicit context permissions and selectable processing modes: Local AI, Hybrid AI, Private Cloud AI, and No AI. The current UI is a privacy-safe foundation; connecting a production model service can be added without changing the browser experience.
+Enosx AI includes explicit context permissions and selectable processing modes: Local AI, Hybrid AI, Private Cloud AI, and No AI. The Enosx AI sidebar now includes a **Local GGUF models** manager: import a `.gguf` file downloaded from Hugging Face, inspect its GGUF header and quantization, choose it as the active local model, and remove it later. The model blob and metadata are stored in IndexedDB on the device and are not uploaded.
+
+### Offline GGUF workflow
+
+1. Open the Enosx AI sidebar with the brain icon.
+2. Under **Local GGUF models**, choose **Import** and select a Hugging Face `.gguf` file.
+3. Select the imported model, keep **Processing mode** on **Local AI**, and submit a prompt.
+
+The browser shell validates and stores the model locally so it remains available offline. This UI is deliberately runtime-agnostic: the next native release can attach a bundled `llama.cpp`/`llama-server` runtime without changing the sidebar or model library. Until that runtime is bundled, the panel clearly reports that the selected model is ready and keeps the prompt local instead of pretending a remote completion occurred.
 
 The browser is offline-first. The app registers a service worker, caches the application shell, displays online/offline status, and stores bookmarks, reading-list items, history, and preferences in local browser storage. The installed desktop app loads the compiled static build without requiring an internet connection.
 
@@ -60,8 +68,8 @@ pnpm electron:build
 
 ## Offline behavior
 
-The first web visit must be online so the browser can download the app shell. After that, the interface, local navigation shell, saved bookmarks, reading list, history, privacy controls, and Local AI demo interactions remain available offline. External websites, remote search, cloud AI, and external synchronization still require a network connection.
+The first web visit must be online so the browser can download the app shell. After that, the interface, local navigation shell, saved bookmarks, reading list, history, privacy controls, imported GGUF model files, and local AI model-selection flow remain available offline. External websites, remote search, cloud AI, and external synchronization still require a network connection.
 
 ## Security notes
 
-The Electron shell uses context isolation, disables Node integration in the renderer, enables sandboxing, and restricts external window requests to the system browser. The current Enosx AI controls make context permissions visible but do not connect to a production AI model yet.
+The Electron shell uses context isolation, disables Node integration in the renderer, enables sandboxing, and restricts external window requests to the system browser. GGUF files are kept in the renderer’s IndexedDB storage and are only accepted after the file magic is validated. The current release provides the offline model library and UI contract; a native inference runtime is still required for token generation.

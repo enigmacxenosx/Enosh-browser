@@ -3,9 +3,9 @@
 import { FormEvent, useEffect, useMemo, useState } from 'react'
 import {
   ArrowLeft, ArrowRight, Bookmark, BookmarkCheck, BrainCircuit, Check, ChevronDown, CircleHelp,
-  Clock3, Command, Download, Globe2, History, LayoutGrid, LockKeyhole, Menu, MonitorDown,
-  MoreHorizontal, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, Sparkles, Star,
-  UserRound, WifiOff, X, Zap,
+  Clock3, Command, Cpu, Download, ExternalLink, FileDown, Globe2, History, LayoutGrid,
+  LoaderCircle, LockKeyhole, Menu, MonitorDown, MoreHorizontal, Plus, RefreshCw, Search, Send,
+  Settings2, ShieldCheck, Sparkles, Star, Trash2, Upload, UserRound, WifiOff, X, Zap,
 } from 'lucide-react'
 
 type Tab = {
@@ -25,6 +25,68 @@ type Activity = {
 type BeforeInstallPromptEvent = Event & {
   prompt: () => Promise<void>
   userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
+}
+
+type LocalModel = {
+  id: string
+  fileName: string
+  size: number
+  architecture: string
+  quantization: string
+  addedAt: string
+}
+
+type StoredLocalModel = LocalModel & { file: Blob }
+
+const MODEL_DB_NAME = 'enosx-local-models'
+const MODEL_STORE_NAME = 'gguf-models'
+
+function openModelDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(MODEL_DB_NAME, 1)
+    request.onupgradeneeded = () => request.result.createObjectStore(MODEL_STORE_NAME, { keyPath: 'id' })
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function listLocalModels(): Promise<LocalModel[]> {
+  const db = await openModelDb()
+  return new Promise((resolve, reject) => {
+    const request = db.transaction(MODEL_STORE_NAME, 'readonly').objectStore(MODEL_STORE_NAME).getAll()
+    request.onsuccess = () => resolve((request.result as StoredLocalModel[]).map(({ file: _file, ...model }) => model))
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function saveLocalModel(model: StoredLocalModel) {
+  const db = await openModelDb()
+  return new Promise<void>((resolve, reject) => {
+    const request = db.transaction(MODEL_STORE_NAME, 'readwrite').objectStore(MODEL_STORE_NAME).put(model)
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function removeLocalModel(id: string) {
+  const db = await openModelDb()
+  return new Promise<void>((resolve, reject) => {
+    const request = db.transaction(MODEL_STORE_NAME, 'readwrite').objectStore(MODEL_STORE_NAME).delete(id)
+    request.onsuccess = () => resolve()
+    request.onerror = () => reject(request.error)
+  })
+}
+
+async function readGgufMetadata(file: File) {
+  const header = await file.slice(0, 32).arrayBuffer()
+  const bytes = new Uint8Array(header)
+  const magic = String.fromCharCode(...bytes.slice(0, 4))
+  if (magic !== 'GGUF') throw new Error('That file is not a valid GGUF model.')
+  const version = new DataView(header).getUint32(4, true)
+  return {
+    architecture: version >= 2 ? 'GGUF v2+' : `GGUF v${version}`,
+    quantization: file.name.match(/(q[ikf]\d+[_a-z\d]*)/i)?.[1]?.toUpperCase() ?? 'Quantized',
+  }
 }
 
 const shortcuts = [
@@ -67,6 +129,9 @@ export default function Page() {
   const [aiMode, setAiMode] = useState('Local AI')
   const [aiPrompt, setAiPrompt] = useState('')
   const [aiMessage, setAiMessage] = useState('')
+  const [localModels, setLocalModels] = useState<LocalModel[]>([])
+  const [activeModelId, setActiveModelId] = useState('')
+  const [modelBusy, setModelBusy] = useState(false)
   const [activePanel, setActivePanel] = useState<'newtab' | 'bookmarks' | 'reading' | 'history'>('newtab')
   const [online, setOnline] = useState(true)
   const [installPrompt, setInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null)
@@ -96,6 +161,10 @@ export default function Page() {
     window.addEventListener('appinstalled', onInstalled)
     setIsInstalled(window.matchMedia('(display-mode: standalone)').matches)
     if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => undefined)
+    listLocalModels().then((models) => {
+      setLocalModels(models)
+      setActiveModelId(models[0]?.id ?? '')
+    }).catch(() => undefined)
     return () => {
       window.removeEventListener('online', goOnline)
       window.removeEventListener('offline', goOffline)
@@ -195,9 +264,50 @@ export default function Page() {
     event.preventDefault()
     if (!aiPrompt.trim() || aiMode === 'No AI') return
     const prompt = aiPrompt.trim()
-    const modeCopy = aiMode === 'Local AI' ? 'your device' : aiMode.toLowerCase()
-    setAiMessage(`Enosx AI is ready to ${prompt.toLowerCase()} using ${permission.toLowerCase()} in ${modeCopy}. This offline-safe demo keeps the request local until you connect a model.`)
+    if (aiMode === 'Local AI' && !activeModelId) {
+      setAiMessage('Choose a local GGUF model first. Your model file stays in this browser profile and is never uploaded.')
+      return
+    }
+    const selectedModel = localModels.find((model) => model.id === activeModelId)
+    const modeCopy = aiMode === 'Local AI' ? selectedModel?.fileName ?? 'your device' : aiMode.toLowerCase()
+    setAiMessage(`Ready to ${prompt.toLowerCase()} with ${modeCopy} using ${permission.toLowerCase()}. The model is stored locally; inference will stay offline when the local runtime is available.`)
     setAiPrompt('')
+  }
+
+  async function importGguf(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    setModelBusy(true)
+    try {
+      const metadata = await readGgufMetadata(file)
+      const model: StoredLocalModel = {
+        id: `${file.name}-${file.size}-${file.lastModified}`,
+        fileName: file.name,
+        size: file.size,
+        ...metadata,
+        addedAt: new Date().toISOString(),
+        file,
+      }
+      await saveLocalModel(model)
+      const models = await listLocalModels()
+      setLocalModels(models)
+      setActiveModelId(model.id)
+      setAiMode('Local AI')
+      setToast(`${file.name} is ready for offline AI`)
+    } catch (error) {
+      setAiMessage(error instanceof Error ? error.message : 'Unable to import that GGUF file.')
+    } finally {
+      setModelBusy(false)
+    }
+  }
+
+  async function deleteGguf(model: LocalModel) {
+    await removeLocalModel(model.id)
+    const models = await listLocalModels()
+    setLocalModels(models)
+    setActiveModelId((current) => current === model.id ? (models[0]?.id ?? '') : current)
+    setToast(`${model.fileName} removed from this device`)
   }
 
   function chooseQuickAction(action: string) {
@@ -262,7 +372,7 @@ export default function Page() {
             {activePanel !== 'newtab' && <div className="rounded-2xl border border-border/70 bg-card/55 p-5 backdrop-blur-md"><div className="mb-5 flex items-center justify-between"><div><p className="font-mono text-[10px] uppercase tracking-[0.2em] text-primary">Personal space</p><h2 className="mt-2 text-2xl font-medium">{panelItems.find((item) => item.id === activePanel)?.label}</h2></div><MoreHorizontal className="size-4 text-muted-foreground" /></div>{(activePanel === 'bookmarks' ? bookmarks : activePanel === 'reading' ? readingList : activity).length === 0 ? <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">Nothing saved here yet. Your data stays on this device.</div> : <div className="grid gap-2">{(activePanel === 'bookmarks' ? bookmarks : activePanel === 'reading' ? readingList : activity).map((item) => <div key={`${item.title}-${item.url}`} className="flex items-center gap-3 rounded-xl border border-border/50 bg-background/30 p-3"><span className={`size-2 rounded-full ${item.color}`} /><button onClick={() => openActivity(item)} className="min-w-0 flex-1 text-left"><span className="block truncate text-sm font-medium">{item.title}</span><span className="mt-1 block truncate text-xs text-muted-foreground">{item.url}</span></button><span className="text-xs text-muted-foreground">{item.time}</span><button onClick={() => setToast('Item kept locally')} className="rounded-md p-2 text-muted-foreground hover:bg-muted hover:text-primary" aria-label="Keep item"><Check className="size-3.5" /></button></div>)}</div>}</div>}
           </div></section>
 
-          {aiOpen && <aside className="ai-panel w-full shrink-0 border-l border-primary/20 bg-card/90 p-5 backdrop-blur-2xl sm:w-80" aria-label="Enosh AI panel"><div className="flex items-start justify-between"><div><div className="flex items-center gap-2 text-primary"><Sparkles className="size-4" /><span className="font-mono text-[10px] uppercase tracking-[0.2em]">Enosh AI</span></div><h2 className="mt-2 text-lg font-medium">A little help, on your terms.</h2></div><button onClick={() => setAiOpen(false)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Close Enosh AI"><X className="size-4" /></button></div><p className="mt-3 text-xs leading-5 text-muted-foreground">AI stays scoped to exactly what you approve. The local mode works without an internet connection.</p><div className="mt-6 grid gap-3"><div><label className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground" htmlFor="permission">Context permission</label><select id="permission" value={permission} onChange={(event) => setPermission(event.target.value)} className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"><option>Selected text only</option><option>This page</option><option>Approved tabs</option><option>Current workspace</option></select></div><div><label className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground" htmlFor="ai-mode">Processing mode</label><select id="ai-mode" value={aiMode} onChange={(event) => setAiMode(event.target.value)} className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"><option>Local AI</option><option>Hybrid AI</option><option>Private Cloud AI</option><option>No AI</option></select></div></div>{aiMessage && <div className="mt-5 rounded-xl border border-primary/20 bg-primary/5 p-3 text-xs leading-5 text-muted-foreground">{aiMessage}</div>}<div className="mt-6 flex flex-wrap gap-2">{aiQuickActions.map((action) => <button key={action} onClick={() => chooseQuickAction(action)} className="rounded-full border border-border bg-background/60 px-3 py-1.5 text-xs text-muted-foreground transition hover:border-primary/50 hover:text-foreground">{action}</button>)}</div><form onSubmit={askEnosh} className="mt-6 flex items-center gap-2 rounded-xl border border-border bg-background/70 p-2"><input value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)} className="min-w-0 flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground" placeholder={aiMode === 'No AI' ? 'AI is disabled' : 'Ask Enosh anything'} aria-label="Ask Enosh AI" disabled={aiMode === 'No AI'} /><button className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-40" aria-label="Send to Enosh AI" disabled={aiMode === 'No AI'}><Send className="size-3.5" /></button></form><div className="mt-5 flex items-center gap-2 text-[11px] text-muted-foreground"><LockKeyhole className="size-3 text-primary" />Permission is visible before every action</div></aside>}
+          {aiOpen && <aside className="ai-panel w-full shrink-0 border-l border-primary/20 bg-card/90 p-5 backdrop-blur-2xl sm:w-80" aria-label="Enosh AI panel"><div className="flex items-start justify-between"><div><div className="flex items-center gap-2 text-primary"><Sparkles className="size-4" /><span className="font-mono text-[10px] uppercase tracking-[0.2em]">Enosh AI</span></div><h2 className="mt-2 text-lg font-medium">A little help, on your terms.</h2></div><button onClick={() => setAiOpen(false)} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground" aria-label="Close Enosh AI"><X className="size-4" /></button></div><p className="mt-3 text-xs leading-5 text-muted-foreground">AI stays scoped to exactly what you approve. The local mode works without an internet connection.</p><div className="mt-6 grid gap-3"><div><label className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground" htmlFor="permission">Context permission</label><select id="permission" value={permission} onChange={(event) => setPermission(event.target.value)} className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"><option>Selected text only</option><option>This page</option><option>Approved tabs</option><option>Current workspace</option></select></div><div><label className="font-mono text-[10px] uppercase tracking-wider text-muted-foreground" htmlFor="ai-mode">Processing mode</label><select id="ai-mode" value={aiMode} onChange={(event) => setAiMode(event.target.value)} className="mt-2 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm outline-none focus:border-primary"><option>Local AI</option><option>Hybrid AI</option><option>Private Cloud AI</option><option>No AI</option></select></div></div><div className="mt-5 rounded-xl border border-border/70 bg-background/40 p-3"><div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2"><Cpu className="size-3.5 text-primary" /><span className="text-xs font-medium">Local GGUF models</span></div><label className="flex cursor-pointer items-center gap-1 rounded-md border border-primary/30 px-2 py-1 text-[11px] text-primary hover:bg-primary/10"><Upload className="size-3" />{modelBusy ? 'Checking…' : 'Import'}<input type="file" accept=".gguf,application/octet-stream" className="hidden" onChange={importGguf} disabled={modelBusy} /></label></div><p className="mt-2 text-[11px] leading-4 text-muted-foreground">Import a Hugging Face GGUF once. It stays in IndexedDB for offline use.</p>{localModels.length === 0 ? <div className="mt-3 rounded-lg border border-dashed border-border p-3 text-center text-[11px] text-muted-foreground">No local model yet</div> : <div className="mt-3 grid gap-2"><select value={activeModelId} onChange={(event) => setActiveModelId(event.target.value)} className="w-full rounded-lg border border-border bg-background px-2 py-2 text-xs outline-none focus:border-primary" aria-label="Choose local GGUF model">{localModels.map((model) => <option key={model.id} value={model.id}>{model.fileName}</option>)}</select>{localModels.filter((model) => model.id === activeModelId).map((model) => <div key={model.id} className="flex items-center justify-between gap-2 text-[10px] text-muted-foreground"><span>{(model.size / 1024 / 1024 / 1024).toFixed(1)} GB · {model.quantization} · {model.architecture}</span><button onClick={() => deleteGguf(model)} className="rounded p-1 hover:bg-destructive/10 hover:text-destructive" aria-label={`Remove ${model.fileName}`}><Trash2 className="size-3" /></button></div>)}</div>}</div>{aiMessage && <div className="mt-5 rounded-xl border border-primary/20 bg-primary/5 p-3 text-xs leading-5 text-muted-foreground">{aiMessage}</div>}<div className="mt-6 flex flex-wrap gap-2">{aiQuickActions.map((action) => <button key={action} onClick={() => chooseQuickAction(action)} className="rounded-full border border-border bg-background/60 px-3 py-1.5 text-xs text-muted-foreground transition hover:border-primary/50 hover:text-foreground">{action}</button>)}</div><form onSubmit={askEnosh} className="mt-6 flex items-center gap-2 rounded-xl border border-border bg-background/70 p-2"><input value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)} className="min-w-0 flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground" placeholder={aiMode === 'No AI' ? 'AI is disabled' : 'Ask Enosh anything'} aria-label="Ask Enosh AI" disabled={aiMode === 'No AI'} /><button className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground disabled:cursor-not-allowed disabled:opacity-40" aria-label="Send to Enosh AI" disabled={aiMode === 'No AI'}><Send className="size-3.5" /></button></form><div className="mt-5 flex items-center gap-2 text-[11px] text-muted-foreground"><LockKeyhole className="size-3 text-primary" />Permission is visible before every action</div></aside>}
         </div>
 
         <footer className="flex items-center justify-between border-t border-border/60 bg-card/50 px-4 py-2 text-[11px] text-muted-foreground"><div className="flex items-center gap-2">{online ? <Globe2 className="size-3 text-primary" /> : <WifiOff className="size-3 text-amber-300" />}<span>{online ? 'Online · Enosx state is synced locally' : 'Offline · browsing shell and saved data available'}</span></div><div className="hidden items-center gap-4 sm:flex"><span>Private mode {privateMode ? 'on' : 'off'}</span><button onClick={() => setToast('Settings are stored locally in this build')} className="flex items-center gap-1 hover:text-foreground"><Settings2 className="size-3" />Settings</button><Download className="size-3" /></div></footer>
