@@ -23,6 +23,16 @@ The **Generation controls** card lets you tune the next local run without leavin
 
 These preferences are saved in local storage and are included in the prompt handoff contract for the future native inference runtime.
 
+### Local AI run states
+
+The sidebar now communicates the full local-run lifecycle:
+
+- **Loading local model** — prepares the selected GGUF and context window.
+- **Generating response** — shows the active prompt, animated token indicator, and a **Stop** action.
+- **Generation unavailable** — explains when the native inference runtime is not connected and offers **Retry** without losing the prompt.
+
+The UI does not display a fake completion. Until a native runtime is attached, the demo transitions to the unavailable state while keeping the model and prompt local.
+
 The browser shell validates and stores the model locally so it remains available offline. This UI is deliberately runtime-agnostic: the next native release can attach a bundled `llama.cpp`/`llama-server` runtime without changing the sidebar or model library. Until that runtime is bundled, the panel clearly reports that the selected model is ready and keeps the prompt local instead of pretending a remote completion occurred.
 
 The browser is offline-first. The app registers a service worker, caches the application shell, displays online/offline status, and stores bookmarks, reading-list items, history, and preferences in local browser storage. The installed desktop app loads the compiled static build without requiring an internet connection.
